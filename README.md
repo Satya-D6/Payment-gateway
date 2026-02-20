@@ -1,19 +1,17 @@
-# Payment Gateway System
+# Payment Gateway
 
-A complete, production-ready payment gateway implementation similar to Razorpay or Stripe, featuring merchant onboarding, order management, multi-method payment processing (UPI and Cards), and a hosted checkout page.
+A complete, production-ready payment gateway system with multi-method payment processing (UPI and Cards), merchant dashboard, and hosted checkout page. Built with Node.js backend, React dashboard, and vanilla JavaScript checkout page.
 
-## 🎯 Features
+## Features
 
-- **Merchant API Authentication**: API key and secret-based authentication for all protected endpoints
-- **Order Management**: Create and retrieve payment orders with merchant isolation
-- **Multi-Method Payment Processing**:
-  - UPI payments with VPA validation
-  - Card payments with Luhn algorithm validation and network detection
-- **Payment Status Tracking**: Real-time payment status with processing simulation
-- **Merchant Dashboard**: View API credentials and transaction statistics
-- **Hosted Checkout Page**: Professional payment interface for customers
-- **Database Persistence**: PostgreSQL with proper schema and relationships
-- **Dockerized Deployment**: Complete containerization with docker-compose
+✅ **Dockerized Deployment** - Single command deployment with `docker-compose up -d`  
+✅ **REST API** - Merchant authentication via API key/secret  
+✅ **Multi-Method Processing** - UPI and Card payments with full validation  
+✅ **Payment Validation** - VPA format validation, Luhn algorithm, card network detection, expiry validation  
+✅ **Merchant Dashboard** - View API credentials, transaction statistics, and payment history  
+✅ **Hosted Checkout** - Professional payment interface with real-time status updates  
+✅ **Database Persistence** - PostgreSQL with proper schema and relationships  
+✅ **Test Mode** - Deterministic payment outcomes for automated testing
 
 ## 🏗️ System Architecture
 

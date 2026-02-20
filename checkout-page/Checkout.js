@@ -1,303 +1,389 @@
-import React, { useState, useEffect } from 'react';
-import axios from 'axios';
-import './Checkout.css';
+class Checkout {
+  constructor() {
+    this.orderId = new URLSearchParams(window.location.search).get('order_id');
+    this.orderData = null;
+    this.paymentData = null;
+    this.selectedMethod = 'upi';
+    this.init();
+  }
 
-function Checkout() {
-  const [order, setOrder] = useState(null);
-  const [selectedMethod, setSelectedMethod] = useState(null);
-  const [payment, setPayment] = useState(null);
-  const [loading, setLoading] = useState(true);
-  const [state, setState] = useState('loading'); // loading, form, processing, success, error
-  const [formData, setFormData] = useState({
-    vpa: '',
-    cardNumber: '',
-    expiryMonth: '',
-    expiryYear: '',
-    cvv: '',
-    cardholderName: ''
-  });
-
-  useEffect(() => {
-    const params = new URLSearchParams(window.location.search);
-    const orderId = params.get('order_id');
-    
-    if (!orderId) {
-      setState('error');
+  init() {
+    if (!this.orderId) {
+      this.showError('No order ID provided');
       return;
     }
+    this.fetchOrderDetails();
+    this.setupEventListeners();
+  }
 
-    fetchOrder(orderId);
-  }, []);
-
-  const fetchOrder = async (orderId) => {
+  async fetchOrderDetails() {
     try {
-      const response = await axios.get(`http://localhost:8000/api/v1/orders/${orderId}/public`);
-      setOrder(response.data);
-      setState('form');
+      const response = await fetch(
+        `http://localhost:8000/api/v1/orders/${this.orderId}/public`
+      );
+      if (!response.ok) throw new Error('Order not found');
+      this.orderData = await response.json();
+      this.render();
     } catch (error) {
-      console.error('Error fetching order:', error);
-      setState('error');
-    } finally {
-      setLoading(false);
+      this.showError('Failed to load order. ' + error.message);
     }
-  };
+  }
 
-  const formatAmount = (amount) => {
-    return '₹' + (amount / 100).toLocaleString('en-IN', { maximumFractionDigits: 2 });
-  };
+  setupEventListeners() {
+    document.addEventListener('click', (e) => {
+      if (e.target.dataset.method) {
+        this.selectPaymentMethod(e.target.dataset.method);
+      }
+      if (e.target.dataset.testid === 'pay-button') {
+        e.preventDefault();
+        this.handlePayment();
+      }
+      if (e.target.dataset.testid === 'retry-button') {
+        this.resetCheckout();
+      }
+    });
+  }
 
-  const handleInputChange = (e) => {
-    const { name, value } = e.target;
-    setFormData(prev => ({
-      ...prev,
-      [name]: value
-    }));
-  };
+  selectPaymentMethod(method) {
+    this.selectedMethod = method;
+    
+    document.querySelectorAll('[data-method]').forEach(btn => {
+      btn.classList.remove('active');
+      if (btn.dataset.method === method) {
+        btn.classList.add('active');
+      }
+    });
 
-  const handlePayment = async (e) => {
-    e.preventDefault();
-    setState('processing');
+    document.querySelectorAll('[data-testid$="-form"]').forEach(form => {
+      form.classList.remove('active');
+    });
+    const form = document.querySelector(`[data-testid="${method}-form"]`);
+    if (form) form.classList.add('active');
+  }
+
+  async handlePayment() {
+    const form = document.querySelector(
+      `[data-testid="${this.selectedMethod}-form"]`
+    );
+    
+    if (!this.validateForm(form)) return;
+
+    this.showProcessing();
 
     try {
-      let paymentData = {
-        order_id: order.id,
-        method: selectedMethod
-      };
+      const paymentPayload = await this.buildPaymentPayload();
+      
+      const response = await fetch(
+        'http://localhost:8000/api/v1/payments/public',
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(paymentPayload)
+        }
+      );
 
-      if (selectedMethod === 'upi') {
-        paymentData.vpa = formData.vpa;
-      } else if (selectedMethod === 'card') {
-        paymentData.card = {
-          number: formData.cardNumber,
-          expiry_month: formData.expiryMonth,
-          expiry_year: formData.expiryYear,
-          cvv: formData.cvv,
-          holder_name: formData.cardholderName
-        };
+      if (!response.ok) {
+        const errorData = await response.json();
+        throw new Error(
+          errorData.error?.description || 'Payment creation failed'
+        );
       }
 
-      const response = await axios.post('http://localhost:8000/api/v1/payments/public', paymentData);
-      setPayment(response.data);
-
-      // Poll for payment status
-      pollPaymentStatus(response.data.id);
+      this.paymentData = await response.json();
+      await this.pollPaymentStatus();
     } catch (error) {
       console.error('Payment error:', error);
-      setState('error');
-      setFormData(prev => ({
-        ...prev,
-        vpa: '',
-        cardNumber: '',
-        expiryMonth: '',
-        expiryYear: '',
-        cvv: '',
-        cardholderName: ''
-      }));
+      this.showError(error.message);
     }
-  };
+  }
 
-  const pollPaymentStatus = async (paymentId) => {
-    const maxAttempts = 60; // 2 minutes with 2-second intervals
+  validateForm(form) {
+    const inputs = form.querySelectorAll('input');
+    for (let input of inputs) {
+      if (!input.value.trim()) {
+        alert('Please fill all fields');
+        return false;
+      }
+    }
+
+    if (this.selectedMethod === 'card') {
+      const cardNumber = form.querySelector('[data-testid="card-number-input"]').value;
+      if (!this.validateLuhn(cardNumber)) {
+        alert('Invalid card number');
+        return false;
+      }
+    }
+
+    return true;
+  }
+
+  validateLuhn(num) {
+    const digits = num.replace(/\D/g, '');
+    if (digits.length < 13 || digits.length > 19) return false;
+    
+    let sum = 0;
+    let isEven = false;
+    
+    for (let i = digits.length - 1; i >= 0; i--) {
+      let digit = parseInt(digits[i]);
+      
+      if (isEven) {
+        digit *= 2;
+        if (digit > 9) digit -= 9;
+      }
+      
+      sum += digit;
+      isEven = !isEven;
+    }
+    
+    return sum % 10 === 0;
+  }
+
+  async buildPaymentPayload() {
+    if (this.selectedMethod === 'upi') {
+      return {
+        order_id: this.orderId,
+        method: 'upi',
+        vpa: document.querySelector('[data-testid="vpa-input"]').value
+      };
+    } else {
+      const expiryInput = document.querySelector('[data-testid="expiry-input"]').value;
+      const [month, year] = expiryInput.split('/');
+      
+      return {
+        order_id: this.orderId,
+        method: 'card',
+        card: {
+          number: document.querySelector('[data-testid="card-number-input"]').value,
+          expiry_month: month,
+          expiry_year: year,
+          cvv: document.querySelector('[data-testid="cvv-input"]').value,
+          holder_name: document.querySelector('[data-testid="cardholder-name-input"]').value
+        }
+      };
+    }
+  }
+
+  async pollPaymentStatus() {
+    const maxAttempts = 60;
     let attempts = 0;
 
     const poll = async () => {
       try {
-        const response = await axios.get(`http://localhost:8000/api/v1/payments/${paymentId}/public`);
-        const paymentStatus = response.data.status;
+        const response = await fetch(
+          `http://localhost:8000/api/v1/payments/${this.paymentData.id}/public`
+        );
+        const payment = await response.json();
 
-        if (paymentStatus === 'success') {
-          setPayment(response.data);
-          setState('success');
-        } else if (paymentStatus === 'failed') {
-          setPayment(response.data);
-          setState('error');
-        } else if (attempts < maxAttempts) {
-          attempts++;
+        if (payment.status === 'success') {
+          this.showSuccess(payment);
+          return;
+        } else if (payment.status === 'failed') {
+          this.showError(
+            payment.error_description || 'Payment processing failed'
+          );
+          return;
+        }
+
+        attempts++;
+        if (attempts < maxAttempts) {
           setTimeout(poll, 2000);
         } else {
-          setState('error');
+          this.showError('Payment processing timeout');
         }
       } catch (error) {
-        console.error('Error polling payment status:', error);
+        console.error('Poll error:', error);
+        attempts++;
         if (attempts < maxAttempts) {
-          attempts++;
           setTimeout(poll, 2000);
-        } else {
-          setState('error');
         }
       }
     };
 
     poll();
-  };
-
-  const handleRetry = () => {
-    setState('form');
-    setPayment(null);
-    setSelectedMethod(null);
-    setFormData({
-      vpa: '',
-      cardNumber: '',
-      expiryMonth: '',
-      expiryYear: '',
-      cvv: '',
-      cardholderName: ''
-    });
-  };
-
-  if (loading) {
-    return <div className="checkout-loading">Loading...</div>;
   }
 
-  return (
-    <div data-testid="checkout-container" className="checkout-container">
-      {order && (
-        <div data-testid="order-summary" className="order-summary">
+  showProcessing() {
+    document.querySelector('[data-testid="upi-form"]')?.classList.remove('active');
+    document.querySelector('[data-testid="card-form"]')?.classList.remove('active');
+    document.querySelector('[data-testid="processing-state"]').classList.add('active');
+  }
+
+  showSuccess(payment) {
+    document.querySelector('[data-testid="processing-state"]').classList.remove('active');
+    document.querySelector('[data-testid="success-state"]').classList.add('active');
+    const paymentIdElement = document.querySelector('[data-testid="payment-id"]');
+    if (paymentIdElement) paymentIdElement.textContent = payment.id;
+  }
+
+  showError(message) {
+    document.querySelector('[data-testid="processing-state"]').classList.remove('active');
+    document.querySelector('[data-testid="success-state"]').classList.remove('active');
+    document.querySelector('[data-testid="error-state"]').classList.add('active');
+    const errorElement = document.querySelector('[data-testid="error-message"]');
+    if (errorElement) errorElement.textContent = message;
+  }
+
+  resetCheckout() {
+    document.querySelector('[data-testid="error-state"]').classList.remove('active');
+    document.querySelector('[data-testid="upi-form"]').classList.add('active');
+    const form = document.querySelector('[data-testid="upi-form"]');
+    if (form) form.reset();
+    this.selectedMethod = 'upi';
+  }
+
+  render() {
+    if (!this.orderData) return;
+
+    const root = document.getElementById('root');
+    const amountInRupees = (this.orderData.amount / 100).toFixed(2);
+
+    root.innerHTML = `
+      <div data-testid="checkout-container" class="checkout-container">
+        <div data-testid="order-summary" class="order-summary">
           <h2>Complete Payment</h2>
-          <div className="order-info">
-            <span>Amount: </span>
-            <span data-testid="order-amount">{formatAmount(order.amount)}</span>
+          <div class="summary-row">
+            <span>Order ID:</span>
+            <span data-testid="order-id">${this.orderId}</span>
           </div>
-          <div className="order-info">
-            <span>Order ID: </span>
-            <span data-testid="order-id">{order.id}</span>
+          <div class="summary-row">
+            <span>Amount:</span>
+            <span data-testid="order-amount">₹${amountInRupees}</span>
+          </div>
+          <div class="summary-row">
+            <span>Currency:</span>
+            <span>${this.orderData.currency}</span>
           </div>
         </div>
-      )}
 
-      {state === 'form' && (
-        <>
-          <div data-testid="payment-methods" className="payment-methods">
-            <button
-              data-testid="method-upi"
-              data-method="upi"
-              className={`method-btn ${selectedMethod === 'upi' ? 'active' : ''}`}
-              onClick={() => setSelectedMethod('upi')}
-            >
-              UPI
-            </button>
-            <button
-              data-testid="method-card"
-              data-method="card"
-              className={`method-btn ${selectedMethod === 'card' ? 'active' : ''}`}
-              onClick={() => setSelectedMethod('card')}
-            >
-              Card
-            </button>
+        <div data-testid="payment-methods" class="payment-methods">
+          <button 
+            data-testid="method-upi" 
+            data-method="upi" 
+            class="method-btn active"
+          >
+            💳 UPI
+          </button>
+          <button 
+            data-testid="method-card" 
+            data-method="card" 
+            class="method-btn"
+          >
+            💰 Card
+          </button>
+        </div>
+
+        <!-- UPI Form -->
+        <form data-testid="upi-form" class="payment-form active">
+          <div class="form-group">
+            <label for="vpa">Virtual Payment Address</label>
+            <input
+              data-testid="vpa-input"
+              id="vpa"
+              type="text"
+              placeholder="username@bank"
+              required
+            />
           </div>
+          <button data-testid="pay-button" type="button" class="pay-button">
+            Pay ₹${amountInRupees}
+          </button>
+        </form>
 
-          {selectedMethod === 'upi' && (
-            <form data-testid="upi-form" className="payment-form" onSubmit={handlePayment}>
+        <!-- Card Form -->
+        <form data-testid="card-form" class="payment-form">
+          <div class="form-group">
+            <label for="card-number">Card Number</label>
+            <input
+              data-testid="card-number-input"
+              id="card-number"
+              type="text"
+              placeholder="4111 1111 1111 1111"
+              required
+            />
+          </div>
+          <div class="form-row">
+            <div class="form-group">
+              <label for="expiry">Expiry (MM/YY)</label>
               <input
-                data-testid="vpa-input"
-                name="vpa"
-                placeholder="username@bank"
+                data-testid="expiry-input"
+                id="expiry"
                 type="text"
-                value={formData.vpa}
-                onChange={handleInputChange}
+                placeholder="12/25"
                 required
               />
-              <button data-testid="pay-button" type="submit" className="pay-btn">
-                Pay {order && formatAmount(order.amount)}
-              </button>
-            </form>
-          )}
-
-          {selectedMethod === 'card' && (
-            <form data-testid="card-form" className="payment-form" onSubmit={handlePayment}>
+            </div>
+            <div class="form-group">
+              <label for="cvv">CVV</label>
               <input
-                data-testid="card-number-input"
-                name="cardNumber"
-                placeholder="Card Number"
+                data-testid="cvv-input"
+                id="cvv"
                 type="text"
-                value={formData.cardNumber}
-                onChange={handleInputChange}
+                placeholder="123"
                 required
               />
-              <div className="form-row">
-                <input
-                  data-testid="expiry-input"
-                  name="expiryMonth"
-                  placeholder="MM"
-                  type="text"
-                  maxLength="2"
-                  value={formData.expiryMonth}
-                  onChange={handleInputChange}
-                  required
-                />
-                <span className="separator">/</span>
-                <input
-                  name="expiryYear"
-                  placeholder="YY"
-                  type="text"
-                  maxLength="2"
-                  value={formData.expiryYear}
-                  onChange={handleInputChange}
-                  required
-                />
-                <input
-                  data-testid="cvv-input"
-                  name="cvv"
-                  placeholder="CVV"
-                  type="text"
-                  maxLength="3"
-                  value={formData.cvv}
-                  onChange={handleInputChange}
-                  required
-                />
-              </div>
-              <input
-                data-testid="cardholder-name-input"
-                name="cardholderName"
-                placeholder="Name on Card"
-                type="text"
-                value={formData.cardholderName}
-                onChange={handleInputChange}
-                required
-              />
-              <button data-testid="pay-button" type="submit" className="pay-btn">
-                Pay {order && formatAmount(order.amount)}
-              </button>
-            </form>
-          )}
-        </>
-      )}
+            </div>
+          </div>
+          <div class="form-group">
+            <label for="cardholder">Cardholder Name</label>
+            <input
+              data-testid="cardholder-name-input"
+              id="cardholder"
+              type="text"
+              placeholder="John Doe"
+              required
+            />
+          </div>
+          <button data-testid="pay-button" type="button" class="pay-button">
+            Pay ₹${amountInRupees}
+          </button>
+        </form>
 
-      {state === 'processing' && (
-        <div data-testid="processing-state" className="processing-state">
-          <div className="spinner"></div>
-          <span data-testid="processing-message" className="processing-message">
+        <!-- Processing State -->
+        <div data-testid="processing-state" class="processing-state">
+          <div class="spinner"></div>
+          <p data-testid="processing-message" class="processing-message">
             Processing payment...
-          </span>
+          </p>
         </div>
-      )}
 
-      {state === 'success' && payment && (
-        <div data-testid="success-state" className="success-state">
+        <!-- Success State -->
+        <div data-testid="success-state" class="success-state">
+          <div class="checkmark">✓</div>
           <h2>Payment Successful!</h2>
-          <div className="success-info">
-            <span>Payment ID: </span>
-            <span data-testid="payment-id">{payment.id}</span>
+          <div class="payment-details">
+            <div class="detail-row">
+              <span>Payment ID:</span>
+              <span data-testid="payment-id"></span>
+            </div>
+            <div class="detail-row">
+              <span>Amount:</span>
+              <span>₹${amountInRupees}</span>
+            </div>
           </div>
-          <span data-testid="success-message" className="success-message">
+          <p data-testid="success-message" class="success-message">
             Your payment has been processed successfully
-          </span>
+          </p>
         </div>
-      )}
 
-      {state === 'error' && (
-        <div data-testid="error-state" className="error-state">
+        <!-- Error State -->
+        <div data-testid="error-state" class="error-state">
+          <div class="error-icon">✗</div>
           <h2>Payment Failed</h2>
-          <span data-testid="error-message" className="error-message">
-            {payment?.error_description || 'Payment could not be processed. Please try again.'}
-          </span>
-          <button data-testid="retry-button" onClick={handleRetry} className="retry-btn">
+          <div data-testid="error-message" class="error-message"></div>
+          <button data-testid="retry-button" class="retry-button">
             Try Again
           </button>
         </div>
-      )}
-    </div>
-  );
+      </div>
+    `;
+  }
 }
 
-export default Checkout;
+if (document.readyState === 'loading') {
+  document.addEventListener('DOMContentLoaded', () => {
+    new Checkout();
+  });
+} else {
+  new Checkout();
+}
